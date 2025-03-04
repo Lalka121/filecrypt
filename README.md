@@ -17,7 +17,7 @@ go install github.com/Lalka121/filecrypt@latest
 Сначала необходимо клонировать репозиторий, а после настроить переменную окружения `PATH`.
 #### Windows:
 ```
-git clone github.com/Lalka121/filecrypt
+git clone https://github.com/Lalka121/filecrypt
 cd filecrypt
 set PATH=%PATH%;.\bin
 ```
