@@ -10,7 +10,7 @@
 ### С помощью Go
 Выполните команду, приведённую ниже. Файл установиться в `$GOPATH/bin`
 ```
-go install github.com/Lalka121/filecrypt
+go install github.com/Lalka121/filecrypt@latest
 ```
 
 ### С помощью git
