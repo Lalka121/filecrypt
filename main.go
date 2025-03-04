@@ -8,14 +8,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
 
+type KeyInfo struct {
+	Key         string `json:"key"`
+	Description string `json:"description,omitempty"`
+}
+
 type KeyStore struct {
-	Keys map[string]string `json:"keys"`
+	Keys map[string]KeyInfo `json:"keys"`
 }
 
 var (
@@ -26,31 +32,31 @@ var (
 func init() {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("Error getting home directory: %v\n", err)
+		fmt.Printf("Ошибка получения домашней директории: %v\n", err)
 		os.Exit(1)
 	}
 	keysDir = filepath.Join(homeDir, ".file_encrypter")
 	if err := os.MkdirAll(keysDir, 0700); err != nil {
-		fmt.Printf("Error creating keys directory: %v\n", err)
+		fmt.Printf("Ошибка создания директории для ключей: %v\n", err)
 		os.Exit(1)
 	}
 	loadKeys()
 }
 
 func loadKeys() {
-	keyStore.Keys = make(map[string]string)
+	keyStore.Keys = make(map[string]KeyInfo)
 	keysPath := filepath.Join(keysDir, "keys.json")
 
 	data, err := os.ReadFile(keysPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Printf("Error reading keys file: %v\n", err)
+			fmt.Printf("Ошибка чтения файла ключей: %v\n", err)
 		}
 		return
 	}
 
 	if err := json.Unmarshal(data, &keyStore); err != nil {
-		fmt.Printf("Error decoding keys file: %v\n", err)
+		fmt.Printf("Ошибка декодирования файла ключей: %v\n", err)
 	}
 }
 
@@ -58,42 +64,45 @@ func saveKeys() {
 	keysPath := filepath.Join(keysDir, "keys.json")
 	data, err := json.MarshalIndent(keyStore, "", "  ")
 	if err != nil {
-		fmt.Printf("Error encoding keys: %v\n", err)
+		fmt.Printf("Ошибка кодирования ключей: %v\n", err)
 		return
 	}
 
 	if err := os.WriteFile(keysPath, data, 0600); err != nil {
-		fmt.Printf("Error saving keys file: %v\n", err)
+		fmt.Printf("Ошибка сохранения файла ключей: %v\n", err)
 	}
 }
 
-func generateKey(id string) {
+func generateKey(id string, description string) {
 	if _, exists := keyStore.Keys[id]; exists {
-		fmt.Printf("Key with ID '%s' already exists\n", id)
+		fmt.Printf("Ключ с ID '%s' уже существует\n", id)
 		return
 	}
 
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		fmt.Printf("Error generating key: %v\n", err)
+		fmt.Printf("Ошибка генерации ключа: %v\n", err)
 		return
 	}
 
 	encodedKey := base64.StdEncoding.EncodeToString(key)
-	keyStore.Keys[id] = encodedKey
+	keyStore.Keys[id] = KeyInfo{
+		Key:         encodedKey,
+		Description: description,
+	}
 	saveKeys()
-	fmt.Printf("Successfully generated new key with ID: %s\n", id)
+	fmt.Printf("Успешно создан новый ключ с ID: %s\n", id)
 }
 
 func getKey(id string) ([]byte, error) {
-	encodedKey, exists := keyStore.Keys[id]
+	keyInfo, exists := keyStore.Keys[id]
 	if !exists {
-		return nil, fmt.Errorf("key with ID '%s' not found", id)
+		return nil, fmt.Errorf("ключ с ID '%s' не найден", id)
 	}
 
-	key, err := base64.StdEncoding.DecodeString(encodedKey)
+	key, err := base64.StdEncoding.DecodeString(keyInfo.Key)
 	if err != nil {
-		return nil, fmt.Errorf("invalid key format: %v", err)
+		return nil, fmt.Errorf("неверный формат ключа: %v", err)
 	}
 
 	return key, nil
@@ -165,7 +174,7 @@ func decryptFile(srcPath, id string) error {
 	}
 
 	if len(ciphertext) < gcm.NonceSize() {
-		return errors.New("invalid ciphertext")
+		return errors.New("неверный формат зашифрованных данных")
 	}
 
 	nonce, ciphertext := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
@@ -182,6 +191,22 @@ func decryptFile(srcPath, id string) error {
 	return nil
 }
 
+func listKeys() {
+	if len(keyStore.Keys) == 0 {
+		fmt.Println("Нет сохраненных ключей")
+		return
+	}
+
+	fmt.Println("Список ключей:")
+	for id, keyInfo := range keyStore.Keys {
+		fmt.Printf("- ID: %s\n", id)
+		desc := keyInfo.Description
+		if desc != "" {
+			fmt.Printf("  Описание: %s\n", desc)
+		}
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printHelp()
@@ -191,33 +216,40 @@ func main() {
 	command := os.Args[1]
 	switch command {
 	case "generate-key":
-		if len(os.Args) != 3 {
-			fmt.Println("Usage: generate-key <key-id>")
+		fs := flag.NewFlagSet("generate-key", flag.ExitOnError)
+		desc := fs.String("m", "", "Описание ключа")
+		fs.Parse(os.Args[2:])
+
+		if fs.NArg() != 1 {
+			fmt.Println("Использование: generate-key [-m описание] <идентификатор-ключа>")
 			return
 		}
-		generateKey(os.Args[2])
+		generateKey(fs.Arg(0), *desc)
 
 	case "encrypt":
 		if len(os.Args) != 4 {
-			fmt.Println("Usage: encrypt <file> <key-id>")
+			fmt.Println("Использование: encrypt <файл> <идентификатор-ключа>")
 			return
 		}
 		if err := encryptFile(os.Args[2], os.Args[3]); err != nil {
-			fmt.Printf("Encryption failed: %v\n", err)
+			fmt.Printf("Ошибка шифрования: %v\n", err)
 		} else {
-			fmt.Println("File encrypted successfully")
+			fmt.Println("Файл успешно зашифрован")
 		}
 
 	case "decrypt":
 		if len(os.Args) != 4 {
-			fmt.Println("Usage: decrypt <file> <key-id>")
+			fmt.Println("Использование: decrypt <файл> <идентификатор-ключа>")
 			return
 		}
 		if err := decryptFile(os.Args[2], os.Args[3]); err != nil {
-			fmt.Printf("Decryption failed: %v\n", err)
+			fmt.Printf("Ошибка дешифрования: %v\n", err)
 		} else {
-			fmt.Println("File decrypted successfully")
+			fmt.Println("Файл успешно расшифрован")
 		}
+
+	case "list-key":
+		listKeys()
 
 	default:
 		printHelp()
@@ -225,9 +257,10 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Println("File Encrypter/Decrypter")
-	fmt.Println("Usage:")
-	fmt.Println("  generate-key <key-id>    Generate new encryption key")
-	fmt.Println("  encrypt <file> <key-id>  Encrypt file")
-	fmt.Println("  decrypt <file> <key-id>  Decrypt file")
+	fmt.Println("Шифровщик/Дешифровщик файлов")
+	fmt.Println("Использование:")
+	fmt.Println("  generate-key [-m описание] <идентификатор>  Создать новый ключ")
+	fmt.Println("  encrypt <файл> <идентификатор>             Зашифровать файл")
+	fmt.Println("  decrypt <файл> <идентификатор>             Дешифровать файл")
+	fmt.Println("  list-key                                   Показать все ключи")
 }
